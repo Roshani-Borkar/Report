@@ -12,88 +12,143 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 /* eslint-disable @typescript-eslint/no-floating-promises */
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { spfi, SPFI } from "@pnp/sp";
 import { SPFx } from "@pnp/sp/presets/all";
 
+// Current Dashboard components
 import CustomerOpportunityStatusChart from "./CurrentDashboard/CustomerOpportunityStatusChart";
 import CustomerOpportunityCountChart from "./CurrentDashboard/CustomerOpportunityCountChart";
-import { FilterPanel } from "./FilterPanel";
 import OpportunityDetailsTable from "./CurrentDashboard/OpportunityDetailsTable";
+import OpportunitySummaryCard from "./CurrentDashboard/OpportunitySummaryCard";
+
+// Overall Dashboard components
 import OpportunitySizeByStatusChart from "./OverallDashboard/OpportunitySizeByStatusChart";
 import OpportunityCountByStatusChart from "./OverallDashboard/OpportunityCountByStatusChart";
 import OpportunitySizeTable from "./OverallDashboard/OpportunitySizeTable";
-import OpportunitySummaryCard from "./CurrentDashboard/OpportunitySummaryCard";
+
+// Winnings Dashboard components
 import BusinessWonChart from "./WinningsDashboard/BusinessWonChart";
 import BusinessWonByQuarterChart from "./WinningsDashboard/BusinessWonByQuarterChart";
-import BusinessLostChart from "./LossesDashboard/BusinessLostChart";
-import BusinessLostByQuarterChart from "./LossesDashboard/BusinessLostByQuarterChart";
 import WinningOpportunityCard from "./WinningsDashboard/WinningOpportunityCard";
-import LostOpportunityCard from "./LossesDashboard/LostOpportunityCard";
-import LostOpportunityTable from "./LossesDashboard/LostOpportunityTable";
 import WonOpportunityTable from "./WinningsDashboard/WonOpportunityTable";
 
+// Losses Dashboard components
+import BusinessLostChart from "./LossesDashboard/BusinessLostChart";
+import BusinessLostByQuarterChart from "./LossesDashboard/BusinessLostByQuarterChart";
+import LostOpportunityCard from "./LossesDashboard/LostOpportunityCard";
+import LostOpportunityTable from "./LossesDashboard/LostOpportunityTable";
+
+// Dashboard (combined metrics) components
 import CustomerOpportunitySizeByStatusChart from "./Dashboard/CustomerOpportunitySizeByStatusChart";
 import CustomerOpportunityCountByStatusChart from "./Dashboard/CustomerOpportunityCountByStatusChart";
 import SideBySideWonLostChart from "./Dashboard/SideBySideWonLostChart";
+
+// Filter Panel
+import { FilterPanel } from "./FilterPanel";
+
 
 const Report: React.FC<{ context: any }> = ({ context }) => {
   const [customers, setCustomers] = useState<string[]>([]);
   const [selectedCustomers, setSelectedCustomers] = useState<string[]>([]);
   const [startDate, setStartDate] = useState<Date | null | undefined>(null);
   const [endDate, setEndDate] = useState<Date | null | undefined>(null);
-  const [tableData, setTableData] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<string>("Current");
+
+  const [allSalesRecords, setAllSalesRecords] = useState<any[]>([]);
+  const [allSalesCustomers, setAllSalesCustomers] = useState<any[]>([]); // For CWSalesCustomer list
+  const [allOpportunityStatuses, setAllOpportunityStatuses] = useState<any[]>([]); // For CWSalesOpportunityStatus list
+  const [statusMap, setStatusMap] = useState<Record<string, number>>({});
+  const [statusOrder, setStatusOrder] = useState<string[]>([]); // To maintain consistent order and colors
 
   const sp: SPFI = spfi().using(SPFx(context));
 
   const tabs = ["Current", "Overall", "Dashboard", "Winnings", "Losses"];
 
   useEffect(() => {
-    async function fetchCustomers() {
-      const items = await sp.web.lists.getByTitle("CWSalesRecords").items.select("Customer")();
-      const uniqueCustomers = Array.from(new Set(items.map((item: any) => item.Customer || "Unknown"))).sort();
-      setCustomers(uniqueCustomers);
+    async function fetchAllInitialData() {
+      try {
+        // Fetch all unique customers for the filter panel (from CWSalesRecords)
+        const customerRecords = await sp.web.lists.getByTitle("CWSalesRecords").items.select("Customer")();
+        const uniqueCustomers = Array.from(new Set(customerRecords.map((item: any) => item.Customer || "Unknown"))).sort();
+        setCustomers(uniqueCustomers);
+
+        // Fetch all sales records
+        const salesRecords = await sp.web.lists.getByTitle("CWSalesRecords").items.select(
+          "Customer", "OpportunityID", "OppAmount", "OpportunityStatus", "TentativeStartDate", "TentativeDecisionDate", "ReportDate", "Title"
+        )();
+        setAllSalesRecords(salesRecords);
+
+        // Fetch CWSalesCustomer data (for mapping Customer ID to Account Name in some charts)
+        const salesCustomers = await sp.web.lists.getByTitle("CWSalesCustomer").items.select("Title", "Account").top(4999)();
+        setAllSalesCustomers(salesCustomers);
+
+        // Fetch opportunity statuses and prepare status map and order
+        const statusItems = await sp.web.lists.getByTitle("CWSalesOpportunityStatus").items.select("Title", "Percentage").orderBy("ID")();
+        const newStatusMap: Record<string, number> = {};
+        const newStatusOrder: string[] = [];
+        statusItems.forEach((item: any) => {
+          newStatusMap[item.Title] = Number(item.Percentage) || 0;
+          newStatusOrder.push(item.Title);
+        });
+        setAllOpportunityStatuses(statusItems);
+        setStatusMap(newStatusMap);
+        setStatusOrder(newStatusOrder);
+
+      } catch (error) {
+        console.error("Error fetching initial data:", error);
+        // Handle error appropriately, e.g., show an error message to the user
+      }
     }
-    fetchCustomers();
+    fetchAllInitialData();
   }, [context]);
 
-  const chartCustomers = selectedCustomers.includes("all") || selectedCustomers.length === 0
-    ? []
-    : selectedCustomers.filter(c => c !== "all" && c !== "(Blank)");
+  // Memoize filtered sales records based on selected filters
+  const filteredSalesRecords = useMemo(() => {
+    let filtered = allSalesRecords;
 
-  useEffect(() => {
-    async function fetchTableData() {
-      const list = sp.web.lists.getByTitle("CWSalesRecords").items.select(
-        "Customer", "Title", "OppAmount", "OpportunityStatus", "ReportDate"
+    const currentChartCustomers = selectedCustomers.includes("all") || selectedCustomers.length === 0
+      ? []
+      : selectedCustomers.filter(c => c !== "all" && c !== "(Blank)");
+
+    if (currentChartCustomers.length > 0) {
+      filtered = filtered.filter(item =>
+        currentChartCustomers.includes(item.Customer)
       );
-
-      const filters: string[] = [];
-
-      if (chartCustomers.length > 0) {
-        const customerFilter = chartCustomers.map(c => `Customer eq '${c.replace(/'/g, "''")}'`).join(" or ");
-        filters.push(`(${customerFilter})`);
-      }
-
-      if (startDate) {
-        filters.push(`ReportDate ge '${startDate.toISOString()}'`);
-      }
-
-      if (endDate) {
-        const endOfDay = new Date(endDate);
-        endOfDay.setHours(23, 59, 59, 999);
-        filters.push(`ReportDate le '${endOfDay.toISOString()}'`);
-      }
-
-      const items = filters.length > 0
-        ? await list.filter(filters.join(" and "))()
-        : await list();
-
-      setTableData(items);
     }
 
-    fetchTableData();
-  }, [chartCustomers, startDate, endDate, sp]);
+    if (startDate) {
+      const startDateTime = startDate.getTime();
+      filtered = filtered.filter(item => {
+        const reportDate = item.ReportDate ? new Date(item.ReportDate).getTime() : null;
+        return reportDate !== null && reportDate >= startDateTime;
+      });
+    }
+
+    if (endDate) {
+      const endOfDay = new Date(endDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      const endDateTime = endOfDay.getTime();
+      filtered = filtered.filter(item => {
+        const reportDate = item.ReportDate ? new Date(item.ReportDate).getTime() : null;
+        return reportDate !== null && reportDate <= endDateTime;
+      });
+    }
+    return filtered;
+  }, [allSalesRecords, selectedCustomers, startDate, endDate]);
+
+  // Generate status colors dynamically, based on fetched status order
+  const statusColors = useMemo(() => {
+    const generatedColors: Record<string, string> = {};
+    const defaultPalette = [
+      "#ffc107", "#FF5F1F", "#8bc34a", "#f44336",
+      "#03a9f4", "#9c27b0", "#ff9800", "#607d8b", "#00bcd4", "#cddc39"
+    ];
+    statusOrder.forEach((status, index) => {
+      generatedColors[status] = defaultPalette[index % defaultPalette.length];
+    });
+    return generatedColors;
+  }, [statusOrder]);
 
   return (
     <div style={{ height: "100%", width: "100%", overflow: "hidden" }}>
@@ -116,27 +171,22 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
         ))}
       </div>
 
-      {/* ✅ Scrollable content wrapper */}
+      {/* Scrollable content wrapper */}
       <div
         style={{
-          height: "calc(100vh - 50px)", // adjust based on your header height
+          height: "calc(100vh - 50px)",
           overflowY: "auto",
           padding: "16px",
           boxSizing: "border-box",
         }}
       >
-
-        {/* Content per tab */}
         {activeTab === "Current" && (
           <>
-            {/* Header Centered + KPI Summary Below */}
             <div style={{ textAlign: "center", marginBottom: 8 }}>
               <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
                 Current Opportunity Overview
               </h3>
             </div>
-
-            {/* KPI Summary Cards */}
             <div style={{
               display: "flex",
               gap: "16px",
@@ -146,14 +196,12 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
             }}>
               <div style={{ flex: 1 }}>
                 <OpportunitySummaryCard
-                  context={context}
-                  startDate={startDate}
-                  endDate={endDate}
-                  showProbable={true} // Show probable amount 
+                  salesRecords={filteredSalesRecords}
+                  statusMap={statusMap}
+                  showProbable={true}
                 />
               </div>
             </div>
-            {/* Chart Layout: Left and Right */}
             <div style={{
               display: "flex",
               gap: "32px",
@@ -162,22 +210,18 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
             }}>
               <div style={{ flex: 1, minWidth: "400px" }}>
                 <CustomerOpportunityStatusChart
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  statusOrder={statusOrder}
+                  statusColors={statusColors}
                 />
               </div>
               <div style={{ flex: 1, minWidth: "400px" }}>
                 <CustomerOpportunityCountChart
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  statusColors={statusColors}
                 />
               </div>
             </div>
-            {/* Filter Panel */}
             <FilterPanel
               customers={customers}
               selectedCustomers={selectedCustomers}
@@ -187,84 +231,67 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               endDate={endDate}
               setEndDate={setEndDate}
             />
-            {/* Table */}
             <div style={{ marginBottom: 32 }}>
               <OpportunityDetailsTable
-                context={context}
-                customers={chartCustomers}
-                startDate={startDate}
-                endDate={endDate}
+                salesRecords={filteredSalesRecords}
               />
             </div>
-
-
           </>
         )}
 
+        {activeTab === "Overall" && (
+          <>
+            <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
+                Overall Opportunity Overview
+              </h3>
+            </div>
 
-        {
-          activeTab === "Overall" && (
-            <>
-              {/* Heading */}
-              <div style={{ textAlign: "center", marginBottom: 16 }}>
-                <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
-                  Overall Opportunity Overview
-                </h3>
+            <div style={{ display: "flex", width: "100%", gap: "24px", alignItems: "flex-start" }}>
+              <div style={{ flex: 3, display: "flex", flexDirection: "column", gap: "32px" }}>
+                <OpportunitySizeByStatusChart
+                  salesRecords={filteredSalesRecords}
+                  statusOrder={statusOrder}
+                  statusColors={statusColors}
+                />
+                <OpportunityCountByStatusChart
+                  salesRecords={filteredSalesRecords}
+                  statusOrder={statusOrder}
+                  statusColors={statusColors}
+                />
               </div>
-
-              <div style={{ display: "flex", width: "100%", gap: "24px", alignItems: "flex-start" }}>
-                {/* Left 3/4: Charts */}
-                <div style={{ flex: 3, display: "flex", flexDirection: "column", gap: "32px" }}>
-                  <OpportunitySizeByStatusChart
-                    context={context}
-                    startDate={startDate}
-                    endDate={endDate}
-                  />
-
-                  <OpportunityCountByStatusChart
-                    context={context}
-                    startDate={startDate}
-                    endDate={endDate}
-                  />
-                </div>
-                <div style={{ 
-                  flex: 1, 
-                  display: "flex", 
-                  flexDirection: "column", 
-                  gap: "16px",
-                  paddingRight: "16px" // Add right padding to prevent touching screen edge
-                }}>
-                  <OpportunitySummaryCard
-                    context={context}
-                    startDate={startDate}
-                    endDate={endDate}
-                  />
-
-                  <OpportunitySizeTable
-                    context={context}
-                    startDate={startDate}
-                    endDate={endDate}
-                  />
-                </div>
+              <div style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: "16px",
+                paddingRight: "16px"
+              }}>
+                <OpportunitySummaryCard
+                  salesRecords={filteredSalesRecords}
+                  statusMap={statusMap}
+                />
+                <OpportunitySizeTable
+                  salesRecords={filteredSalesRecords}
+                />
               </div>
+            </div>
 
-              <FilterPanel
-                customers={customers}
-                selectedCustomers={selectedCustomers}
-                setSelectedCustomers={setSelectedCustomers}
-                startDate={startDate}
-                setStartDate={setStartDate}
-                endDate={endDate}
-                setEndDate={setEndDate}
-                hideCustomerFilter={true}
-              />
-            </>
-          )
-        }
+            <FilterPanel
+              customers={customers}
+              selectedCustomers={selectedCustomers}
+              setSelectedCustomers={setSelectedCustomers}
+              startDate={startDate}
+              setStartDate={setStartDate}
+              endDate={endDate}
+              setEndDate={setEndDate}
+              hideCustomerFilter={true}
+            />
+          </>
+        )}
         {
           activeTab === "Winnings" && (
             <>
-              {/* Heading */}
               <div style={{ textAlign: "center", marginBottom: 16 }}>
                 <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
                   Winnings Opportunity Overview
@@ -272,29 +299,18 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               </div>
 
               <div style={{ display: "flex", width: "100%", gap: "24px", alignItems: "flex-start" }}>
-                {/* Left 3/4: Charts */}
                 <div style={{ flex: 3, display: "flex", flexDirection: "column", gap: "32px" }}>
                   <BusinessWonChart
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
                   />
-
                 </div>
                 <div style={{ flex: 1 }}>
                   <WinningOpportunityCard
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
+                    statusMap={statusMap}
                   />
-
                   <BusinessWonByQuarterChart
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
                   />
                 </div>
               </div>
@@ -309,20 +325,15 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               />
               <div style={{ marginBottom: 32 }}>
                 <WonOpportunityTable
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
                 />
               </div>
-
             </>
           )
         }
         {
           activeTab === "Losses" && (
             <>
-              {/* Heading */}
               <div style={{ textAlign: "center", marginBottom: 16 }}>
                 <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
                   Losses Opportunity Overview
@@ -330,29 +341,18 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               </div>
 
               <div style={{ display: "flex", width: "100%", gap: "24px", alignItems: "flex-start" }}>
-                {/* Left 3/4: Charts */}
                 <div style={{ flex: 3, display: "flex", flexDirection: "column", gap: "32px" }}>
                   <BusinessLostChart
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
                   />
-
                 </div>
                 <div style={{ flex: 1 }}>
                   <LostOpportunityCard
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
+                    statusMap={statusMap}
                   />
-
                   <BusinessLostByQuarterChart
-                    context={context}
-                    customers={chartCustomers}
-                    startDate={startDate}
-                    endDate={endDate}
+                    salesRecords={filteredSalesRecords}
                   />
                 </div>
               </div>
@@ -367,26 +367,20 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               />
               <div style={{ marginBottom: 32 }}>
                 <LostOpportunityTable
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
                 />
               </div>
-
             </>
           )
         }
         {activeTab === "Dashboard" && (
           <>
-            {/* Header Centered + KPI Summary Below */}
             <div style={{ textAlign: "center", marginBottom: 8 }}>
               <h3 style={{ fontSize: 20, color: "#333", margin: 0 }}>
                 Dashboard Opportunity Overview
               </h3>
             </div>
 
-            {/* KPI Summary Cards */}
             <div style={{
               display: "flex",
               gap: "16px",
@@ -396,20 +390,17 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
             }}>
               <div style={{ flex: 1 }}>
                 <WinningOpportunityCard
-                  context={context}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  statusMap={statusMap}
                 />
               </div>
               <div style={{ flex: 1 }}>
                 <LostOpportunityCard
-                  context={context}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  statusMap={statusMap}
                 />
               </div>
             </div>
-            {/* Chart Layout: Left and Right */}
             <div style={{
               display: "flex",
               gap: "32px",
@@ -418,30 +409,26 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
             }}>
               <div style={{ flex: 1, minWidth: "400px" }}>
                 <CustomerOpportunitySizeByStatusChart
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  salesCustomers={allSalesCustomers}
+                  statusOrder={statusOrder}
+                  statusColors={statusColors}
                 />
               </div>
               <div style={{ flex: 1, minWidth: "400px" }}>
                 <CustomerOpportunityCountByStatusChart
-                  context={context}
-                  customers={chartCustomers}
-                  startDate={startDate}
-                  endDate={endDate}
+                  salesRecords={filteredSalesRecords}
+                  salesCustomers={allSalesCustomers}
+                  statusColors={statusColors}
                 />
               </div>
             </div>
             <div style={{ flex: 1, minWidth: "400px" }}>
               <SideBySideWonLostChart
-                context={context}
-                customers={chartCustomers}
-                startDate={startDate}
-                endDate={endDate}
+                salesRecords={filteredSalesRecords}
+                salesCustomers={allSalesCustomers}
               />
             </div>
-            {/* Filter Panel */}
             <FilterPanel
               customers={customers}
               selectedCustomers={selectedCustomers}
@@ -451,7 +438,6 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
               endDate={endDate}
               setEndDate={setEndDate}
             />
-
           </>
         )}
       </div >
@@ -459,4 +445,3 @@ const Report: React.FC<{ context: any }> = ({ context }) => {
   );
 }
 export default Report;
-
