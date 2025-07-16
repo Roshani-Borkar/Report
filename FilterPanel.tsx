@@ -19,7 +19,6 @@ import {
   DatePicker,
   IDatePickerStrings,
   DefaultButton,
-  PrimaryButton,
 } from "@fluentui/react";
 
 // Period options with separators
@@ -186,8 +185,7 @@ export const FilterPanel: React.FC<{
   setStartDate: (date: Date | null | undefined) => void;
   endDate?: Date | null;
   setEndDate: (date: Date | null | undefined) => void;
-  hideCustomerFilter?: boolean;
-  onApplyFilter?: () => void; // New callback for apply filter
+  hideCustomerFilter?: boolean; 
 }> = ({
   customers,
   selectedCustomers,
@@ -196,31 +194,12 @@ export const FilterPanel: React.FC<{
   setStartDate,
   endDate,
   setEndDate,
-  hideCustomerFilter = false,
-  onApplyFilter,
+  hideCustomerFilter=false,
 }) => {
   const options = getDropdownOptions(customers);
 
-  // Local state for temporary filter values
-  const [tempSelectedCustomers, setTempSelectedCustomers] = React.useState<string[]>(selectedCustomers);
-  const [tempStartDate, setTempStartDate] = React.useState<Date | null>(startDate || null);
-  const [tempEndDate, setTempEndDate] = React.useState<Date | null>(endDate || null);
-  const [tempSelectedPeriod, setTempSelectedPeriod] = React.useState<string>("all");
-
-  // Update local state when props change
-  React.useEffect(() => {
-    setTempSelectedCustomers(selectedCustomers);
-  }, [selectedCustomers]);
-
-  React.useEffect(() => {
-    setTempStartDate(startDate || null);
-  }, [startDate]);
-
-  React.useEffect(() => {
-    setTempEndDate(endDate || null);
-  }, [endDate]);
-
-  // Period dropdown handler
+  // Period dropdown state and handler
+  const [selectedPeriod, setSelectedPeriod] = React.useState<string>("all");
   const handlePeriodChange = (
     event: React.FormEvent<HTMLDivElement>,
     option?: IDropdownOption
@@ -232,13 +211,13 @@ export const FilterPanel: React.FC<{
       return;
     }
     
-    setTempSelectedPeriod(option.key as string);
+    setSelectedPeriod(option.key as string);
     const { startDate, endDate } = getPeriodDates(option.key as string);
-    setTempStartDate(startDate);
-    setTempEndDate(endDate);
+    setStartDate(startDate);
+    setEndDate(endDate);
   };
 
-  // Customer dropdown handler
+  // Customer dropdown handler (define only ONCE!)
   const handleDropdownChange = (
     event: React.FormEvent<HTMLDivElement>,
     option?: IDropdownOption
@@ -247,14 +226,14 @@ export const FilterPanel: React.FC<{
 
     if (String(option.key) === "all") {
       if (option.selected) {
-        setTempSelectedCustomers(
+        setSelectedCustomers(
           options.filter((o) => o.key !== "all").map((o) => String(o.key))
         );
       } else {
-        setTempSelectedCustomers([]);
+        setSelectedCustomers([]);
       }
     } else {
-      let newSelected = [...tempSelectedCustomers];
+      let newSelected = [...selectedCustomers];
       if (option.selected) {
         newSelected.push(String(option.key));
       } else {
@@ -266,46 +245,9 @@ export const FilterPanel: React.FC<{
       } else {
         newSelected = newSelected.filter((k) => k !== "all");
       }
-      setTempSelectedCustomers(newSelected);
+      setSelectedCustomers(newSelected);
     }
   };
-
-  // Apply filter handler
-  const handleApplyFilter = () => {
-    setSelectedCustomers(tempSelectedCustomers);
-    setStartDate(tempStartDate);
-    setEndDate(tempEndDate);
-    onApplyFilter?.();
-  };
-
-  // Clear filter handler
-  const handleClearFilter = () => {
-    // Clear temporary state
-    setTempSelectedCustomers([]);
-    setTempStartDate(null);
-    setTempEndDate(null);
-    setTempSelectedPeriod("all");
-    
-    // Immediately apply the cleared state
-    setSelectedCustomers([]);
-    setStartDate(null);
-    setEndDate(null);
-    onApplyFilter?.();
-  };
-
-  // Check if there are any filters applied to enable/disable clear button
-  const hasFilters = React.useMemo(() => {
-    const hasCustomerFilter = selectedCustomers.length > 0;
-    const hasDateFilter = startDate || endDate;
-    return hasCustomerFilter || hasDateFilter;
-  }, [selectedCustomers, startDate, endDate]);
-  // Check if there are any changes to enable/disable apply button
-  const hasChanges = React.useMemo(() => {
-    const customersChanged = JSON.stringify(tempSelectedCustomers.sort()) !== JSON.stringify(selectedCustomers.sort());
-    const startDateChanged = tempStartDate?.getTime() !== startDate?.getTime();
-    const endDateChanged = tempEndDate?.getTime() !== endDate?.getTime();
-    return customersChanged || startDateChanged || endDateChanged;
-  }, [tempSelectedCustomers, selectedCustomers, tempStartDate, startDate, tempEndDate, endDate]);
 
   return (
     <div
@@ -317,35 +259,34 @@ export const FilterPanel: React.FC<{
         display: "flex",
         flexDirection: "row",
         gap: 20,
-        alignItems: "flex-start",
-        flexWrap: "nowrap",
+        alignItems: "flex-start", // ensure all labels and controls align at the top
+        flexWrap: "nowrap",       // force single-line layout
       }}
     >
       {!hideCustomerFilter && (
-        <div style={{ minWidth: 180 }}>
-          <Dropdown
-            placeholder="Select customers..."
-            label="Customer"
-            multiSelect
-            selectedKeys={tempSelectedCustomers.length === 0 ? [] : tempSelectedCustomers}
-            options={getDropdownOptions(customers)}
-            onChange={handleDropdownChange}
-            styles={dropdownStyles}
-          />
-        </div>
-      )}
+  <div style={{ minWidth: 180 }}>
+    <Dropdown
+      placeholder="Select customers..."
+      label="Customer"
+      multiSelect
+      selectedKeys={selectedCustomers.length === 0 ? [] : selectedCustomers}
+      options={getDropdownOptions(customers)}
+      onChange={handleDropdownChange}
+      styles={dropdownStyles}
+    />
+  </div>
+)}
 
       <div style={{ minWidth: 220 }}>
         <Dropdown
           placeholder="Select period..."
           label="Period"
-          selectedKey={tempSelectedPeriod}
+          selectedKey={selectedPeriod}
           options={periodOptions}
           onChange={handlePeriodChange}
           styles={dropdownStyles}
         />
       </div>
-      
       <div style={{ minWidth: 200 }}>
         <DatePicker
           label="Start Date"
@@ -353,12 +294,11 @@ export const FilterPanel: React.FC<{
           strings={DayPickerStrings}
           placeholder="Select a start date..."
           ariaLabel="Select a start date"
-          value={tempStartDate ?? undefined}
-          onSelectDate={setTempStartDate}
+          value={startDate ?? undefined}
+          onSelectDate={setStartDate}
           allowTextInput
         />
       </div>
-      
       <div style={{ minWidth: 200 }}>
         <DatePicker
           label="End Date"
@@ -366,25 +306,20 @@ export const FilterPanel: React.FC<{
           strings={DayPickerStrings}
           placeholder="Select an end date..."
           ariaLabel="Select an end date"
-          value={tempEndDate ?? undefined}
-          onSelectDate={setTempEndDate}
+          value={endDate ?? undefined}
+          onSelectDate={setEndDate}
           allowTextInput
         />
       </div>
-      
       <div style={{ alignSelf: "end", minWidth: 130 }}>
         <DefaultButton
-          text="Clear Filter"
-          onClick={handleClearFilter}
-          disabled={!hasFilters}
-        />
-      </div>
-      
-      <div style={{ alignSelf: "end", minWidth: 120 }}>
-        <PrimaryButton
-          text="Apply Filter"
-          onClick={handleApplyFilter}
-          disabled={!hasChanges}
+          text="Clear Dates"
+          onClick={() => {
+            setStartDate(null);
+            setEndDate(null);
+            setSelectedPeriod("all");
+          }}
+          disabled={!startDate && !endDate}
         />
       </div>
     </div>
